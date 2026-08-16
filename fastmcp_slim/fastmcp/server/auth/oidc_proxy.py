@@ -396,20 +396,44 @@ class OIDCProxy(OAuthProxy):
 
         # Use custom verifier if provided, otherwise create default JWTVerifier
         if token_verifier is None:
-            # When verifying id_tokens:
-            # - aud is always the OAuth client_id (per OIDC Core §2), not
-            #   the API audience, so use client_id for audience validation.
-            # - id_tokens don't carry scope/scp claims, so don't pass
-            #   required_scopes to the verifier (scope enforcement happens
-            #   at the FastMCP token level instead).
+            # When verifying id_tokens, aud is the OAuth client_id and scopes
+            # are enforced at the FastMCP token level instead.
             verifier_audience = client_id if verify_id_token else audience
             verifier_scopes = None if verify_id_token else required_scopes
-            token_verifier = self.get_token_verifier(
-                algorithm=algorithm,
-                audience=verifier_audience,
-                required_scopes=verifier_scopes,
-                timeout_seconds=timeout_seconds,
+
+            # Some OIDC providers sign JWTs symmetrically with the OAuth client
+            # secret. Honor an unambiguous HS* discovery value instead of
+            # silently falling back to RS256 + JWKS. Explicit algorithm= wins.
+            verifier_algorithm = algorithm
+            supported_algorithms = (
+                self.oidc_config.id_token_signing_alg_values_supported or []
             )
+            if (
+                verifier_algorithm is None
+                and len(supported_algorithms) == 1
+                and supported_algorithms[0].upper().startswith("HS")
+            ):
+                verifier_algorithm = supported_algorithms[0]
+
+            if verifier_algorithm and verifier_algorithm.upper().startswith("HS"):
+                if client_secret is None:
+                    raise ValueError(
+                        "Symmetric OIDC token verification requires client_secret"
+                    )
+                token_verifier = JWTVerifier(
+                    public_key=client_secret,
+                    issuer=str(self.oidc_config.issuer),
+                    algorithm=verifier_algorithm,
+                    audience=verifier_audience,
+                    required_scopes=verifier_scopes,
+                )
+            else:
+                token_verifier = self.get_token_verifier(
+                    algorithm=verifier_algorithm,
+                    audience=verifier_audience,
+                    required_scopes=verifier_scopes,
+                    timeout_seconds=timeout_seconds,
+                )
 
         init_kwargs: dict[str, object] = {
             "upstream_authorization_endpoint": str(
