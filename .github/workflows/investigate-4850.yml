@@ -15,13 +15,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install uv
         run: python -m pip install uv
-      - name: Verify token-swap and HS256 behavior
+      - name: Reproduce current-main Authentik-compatible HS256 failure
         run: |
           uv run python - <<'PY'
           import asyncio
           import time
-          from unittest.mock import patch
+          from unittest.mock import AsyncMock, patch
 
+          from joserfc import jwk, jwt
           from key_value.aio.stores.memory import MemoryStore
           from mcp.server.auth.provider import AuthorizationCode
           from mcp.shared.auth import OAuthClientInformationFull
@@ -30,16 +31,62 @@ jobs:
           from fastmcp.server.auth import AccessToken, TokenVerifier
           from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
           from fastmcp.server.auth.oauth_proxy.models import ClientCode
+          from fastmcp.server.auth.providers.jwt import JWTVerifier
 
-          CONFIG = OIDCConfiguration.model_validate({
-              "issuer": "https://idp.example.com/application/o/my-app/",
-              "authorization_endpoint": "https://idp.example.com/application/o/authorize/",
-              "token_endpoint": "https://idp.example.com/application/o/token/",
-              "jwks_uri": "https://idp.example.com/application/o/my-app/jwks/",
-              "response_types_supported": ["code"],
-              "subject_types_supported": ["public"],
-              "id_token_signing_alg_values_supported": ["RS256", "HS256"],
-          })
+          ISSUER = "https://idp.example.com/application/o/my-app/"
+          SECRET = "authentik-client-secret"
+
+          def config(algs):
+              return OIDCConfiguration.model_validate({
+                  "issuer": ISSUER,
+                  "authorization_endpoint": "https://idp.example.com/application/o/authorize/",
+                  "token_endpoint": "https://idp.example.com/application/o/token/",
+                  "jwks_uri": "https://idp.example.com/application/o/my-app/jwks/",
+                  "response_types_supported": ["code"],
+                  "subject_types_supported": ["public"],
+                  "id_token_signing_alg_values_supported": algs,
+              })
+
+          async def exchange_and_verify(proxy, upstream_access_token, code):
+              proxy.set_mcp_path("/mcp")
+              client = OAuthClientInformationFull(
+                  client_id="mcp-client",
+                  client_secret="mcp-secret",
+                  redirect_uris=[AnyUrl("http://localhost/callback")],
+              )
+              await proxy.register_client(client)
+              now = time.time()
+              await proxy._code_store.put(
+                  key=code,
+                  value=ClientCode(
+                      code=code,
+                      client_id="mcp-client",
+                      redirect_uri="http://localhost/callback",
+                      code_challenge=None,
+                      code_challenge_method="S256",
+                      scopes=["read"],
+                      idp_tokens={
+                          "access_token": upstream_access_token,
+                          "expires_in": 3600,
+                          "scope": "read",
+                          "token_type": "Bearer",
+                      },
+                      expires_at=now + 300,
+                      created_at=now,
+                  ),
+                  ttl=300,
+              )
+              auth_code = AuthorizationCode(
+                  code=code,
+                  client_id="mcp-client",
+                  redirect_uri=AnyUrl("http://localhost/callback"),
+                  redirect_uri_provided_explicitly=True,
+                  scopes=["read"],
+                  expires_at=now + 300,
+                  code_challenge="",
+              )
+              issued = await proxy.exchange_authorization_code(client, auth_code)
+              return await proxy.verify_token(issued.access_token)
 
           class AcceptVerifier(TokenVerifier):
               async def verify_token(self, token: str):
@@ -51,84 +98,85 @@ jobs:
                       claims={"sub": "user-1"},
                   )
 
-          async def verify_generic_swap():
+          async def main():
+              # Control: the FastMCP reference-token/JTI/storage path itself works.
               with patch.object(
                   OIDCConfiguration,
                   "get_oidc_configuration",
-                  return_value=CONFIG,
+                  return_value=config(["RS256"]),
               ):
-                  proxy = OIDCProxy(
+                  control = OIDCProxy(
                       config_url="https://idp.example.com/application/o/my-app/.well-known/openid-configuration",
                       client_id="my-app",
-                      client_secret="secret",
+                      client_secret=SECRET,
                       base_url="https://mcp.example.com/my-service",
                       token_verifier=AcceptVerifier(),
                       client_storage=MemoryStore(),
                   )
-              proxy.set_mcp_path("/mcp")
-              client = OAuthClientInformationFull(
-                  client_id="mcp-client",
-                  client_secret="mcp-secret",
-                  redirect_uris=[AnyUrl("http://localhost/callback")],
-              )
-              await proxy.register_client(client)
-              now = time.time()
-              await proxy._code_store.put(
-                  key="code",
-                  value=ClientCode(
-                      code="code",
-                      client_id="mcp-client",
-                      redirect_uri="http://localhost/callback",
-                      code_challenge=None,
-                      code_challenge_method="S256",
-                      scopes=["read"],
-                      idp_tokens={
-                          "access_token": "upstream-access-token",
-                          "expires_in": 3600,
-                          "scope": "read",
-                          "token_type": "Bearer",
-                      },
-                      expires_at=now + 300,
-                      created_at=now,
-                  ),
-                  ttl=300,
-              )
-              auth_code = AuthorizationCode(
-                  code="code",
-                  client_id="mcp-client",
-                  redirect_uri=AnyUrl("http://localhost/callback"),
-                  redirect_uri_provided_explicitly=True,
-                  scopes=["read"],
-                  expires_at=now + 300,
-                  code_challenge="",
-              )
-              issued = await proxy.exchange_authorization_code(client, auth_code)
-              loaded = await proxy.verify_token(issued.access_token)
+              loaded = await exchange_and_verify(control, "upstream-access", "control-code")
               assert loaded is not None
-              assert loaded.token == "upstream-access-token"
               print("GENERIC_SWAP=PASS")
 
-          def verify_hs256_constructor():
+              # Authentik-compatible configuration: without an asymmetric signing
+              # key, Authentik signs its JWTs with HS256 using the provider secret
+              # and advertises HS256 in discovery. Current OIDCProxy ignores that
+              # discovery value and silently constructs an RS256/JWKS verifier.
+              hs_config = config(["HS256"])
               with patch.object(
                   OIDCConfiguration,
                   "get_oidc_configuration",
-                  return_value=CONFIG,
+                  return_value=hs_config,
+              ):
+                  proxy = OIDCProxy(
+                      config_url="https://idp.example.com/application/o/my-app/.well-known/openid-configuration",
+                      client_id="my-app",
+                      client_secret=SECRET,
+                      base_url="https://mcp.example.com/my-service",
+                      client_storage=MemoryStore(),
+                  )
+
+              assert isinstance(proxy._token_validator, JWTVerifier)
+              assert proxy._token_validator.algorithm == "RS256"
+              proxy._token_validator._fetch_jwks = AsyncMock(return_value={"keys": []})
+
+              now = int(time.time())
+              upstream = jwt.encode(
+                  {"alg": "HS256"},
+                  {
+                      "sub": "user-1",
+                      "iss": ISSUER,
+                      "iat": now,
+                      "exp": now + 3600,
+                      "scope": "read",
+                  },
+                  jwk.import_key(SECRET, "oct"),
+                  algorithms=["HS256"],
+              )
+              rejected = await exchange_and_verify(proxy, upstream, "hs-code")
+              assert rejected is None
+              print("AUTHENTIK_HS256_CURRENT_MAIN=REPRODUCED")
+
+              # Explicit HS256 is also unusable today because OIDCProxy always
+              # constructs its default verifier with jwks_uri.
+              with patch.object(
+                  OIDCConfiguration,
+                  "get_oidc_configuration",
+                  return_value=hs_config,
               ):
                   try:
                       OIDCProxy(
                           config_url="https://idp.example.com/application/o/my-app/.well-known/openid-configuration",
                           client_id="my-app",
-                          client_secret="secret",
+                          client_secret=SECRET,
                           base_url="https://mcp.example.com/my-service",
                           algorithm="HS256",
                           client_storage=MemoryStore(),
                       )
                   except ValueError as exc:
-                      print(f"HS256_CONSTRUCTOR=FAIL:{exc}")
                       assert "Symmetric HS* algorithms cannot be used with jwks_uri" in str(exc)
+                      print("EXPLICIT_HS256_CURRENT_MAIN=REPRODUCED")
                   else:
-                      raise AssertionError("Expected current-main HS256 OIDCProxy construction to fail")
+                      raise AssertionError("Expected explicit HS256 construction to fail")
 
-          asyncio.run(verify_generic_swap())
-          verify_hs256_constructor()
+          asyncio.run(main())
           PY
