@@ -65,7 +65,33 @@ async def test_scope_endpoint_5xx_uses_fallback_scopes_and_cache():
     assert result1.scopes == ["user"]
     assert result2 is not None
     assert result2.client_id == result1.client_id
-    assert calls == 2  # /user + one degraded /user/repos; second verify is cached
+    assert calls == 2
+
+
+async def test_scope_endpoint_transport_error_uses_fallback_and_cache():
+    calls = 0
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        if request.url.path == "/user":
+            return _user_response(request)
+        raise httpx2.ConnectError("scope endpoint unavailable", request=request)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        verifier = GitHubTokenVerifier(
+            required_scopes=["user"],
+            cache_ttl_seconds=300,
+            http_client=client,
+        )
+        result1 = await verifier.verify_token("valid-during-scope-network-outage")
+        result2 = await verifier.verify_token("valid-during-scope-network-outage")
+
+    assert result1 is not None
+    assert result1.scopes == ["user"]
+    assert result2 is not None
+    assert result2.client_id == result1.client_id
+    assert calls == 2
 
 
 async def test_scope_endpoint_failure_does_not_grant_unverified_required_scope():
