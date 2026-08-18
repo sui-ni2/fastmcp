@@ -22,6 +22,7 @@ Example:
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 from typing import Literal
 
 import httpx2
@@ -36,6 +37,13 @@ from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.token_cache import TokenCache
 
 logger = get_logger(__name__)
+
+# OAuthProxy treats verifier exceptions as ordinary invalid-token results. Keep a
+# request-local marker so GitHubProvider can preserve transient upstream failures
+# without changing error handling for every other OAuth proxy provider.
+_github_verification_error: ContextVar[Exception | None] = ContextVar(
+    "github_verification_error", default=None
+)
 
 
 class GitHubTokenVerifier(TokenVerifier):
@@ -194,6 +202,7 @@ class GitHubTokenVerifier(TokenVerifier):
                 return result
 
         except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
+            _github_verification_error.set(e)
             logger.warning("GitHub token verification unavailable: %s", e)
             raise
         except Exception as e:
@@ -345,3 +354,16 @@ class GitHubProvider(OAuthProxy):
             client_id,
             required_scopes_final,
         )
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        """Preserve transient GitHub verification failures through OAuthProxy."""
+        context_token = _github_verification_error.set(None)
+        try:
+            result = await super().load_access_token(token)
+            if result is None:
+                transient_error = _github_verification_error.get()
+                if transient_error is not None:
+                    raise transient_error
+            return result
+        finally:
+            _github_verification_error.reset(context_token)
