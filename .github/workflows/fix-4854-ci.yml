@@ -1,0 +1,51 @@
+name: Fix 4854 static issues
+
+on:
+  pull_request:
+    branches: ["ci-4854-base"]
+    types: [reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Apply static-analysis fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          provider = Path("fastmcp_slim/fastmcp/server/auth/providers/github.py")
+          text = provider.read_text()
+          import_anchor = "import httpx2\n"
+          import_line = "from mcp.server.auth.provider import AccessToken as MCPAccessToken\n"
+          if import_line not in text:
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
+          text = text.replace(
+              "async def load_access_token(self, token: str) -> AccessToken | None:",
+              "async def load_access_token(self, token: str) -> MCPAccessToken | None:",
+              1,
+          )
+          provider.write_text(text)
+
+          tests = Path("tests/server/auth/providers/test_github_transient_failures.py")
+          test_text = tests.read_text()
+          test_text = test_text.replace(
+              '        with patch.object(OAuthProxy, "load_access_token", swallowing_load_access_token):\n',
+              '        with patch.object(\n            OAuthProxy, "load_access_token", swallowing_load_access_token\n        ):\n',
+              1,
+          )
+          tests.write_text(test_text)
+          PY
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fastmcp_slim/fastmcp/server/auth/providers/github.py tests/server/auth/providers/test_github_transient_failures.py
+          git commit -m "fix: satisfy static analysis for GitHub transient errors"
+          git push origin HEAD:${{ github.head_ref }}
