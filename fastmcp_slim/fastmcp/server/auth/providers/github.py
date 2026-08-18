@@ -140,6 +140,14 @@ class GitHubTokenVerifier(TokenVerifier):
                     },
                 )
 
+                if 500 <= scopes_response.status_code < 600:
+                    logger.warning(
+                        "GitHub scope verification unavailable: %d - %s",
+                        scopes_response.status_code,
+                        scopes_response.text[:200],
+                    )
+                    scopes_response.raise_for_status()
+
                 # Extract scopes from X-OAuth-Scopes header if available
                 scopes_verified = scopes_response.status_code == 200
                 oauth_scopes_header = scopes_response.headers.get("x-oauth-scopes", "")
@@ -196,8 +204,9 @@ class GitHubTokenVerifier(TokenVerifier):
 class GitHubProvider(OAuthProxy):
     """Complete GitHub OAuth provider for FastMCP.
 
-    This provider makes it trivial to add OAuth protection for any upstream provider
-    that is OIDC compliant.
+    This provider makes it trivial to add GitHub OAuth protection to any
+    FastMCP server. Just provide your GitHub OAuth app credentials and
+    a base URL, and you're ready to go.
 
     Features:
     - Transparent OAuth proxy to GitHub
