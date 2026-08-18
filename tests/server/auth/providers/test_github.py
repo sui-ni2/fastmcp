@@ -135,6 +135,7 @@ class TestGitHubTokenVerifier:
 
         # Mock successful scopes API response
         scopes_response = MagicMock()
+        scopes_response.status_code = 200
         scopes_response.headers = {"x-oauth-scopes": "user,repo"}
 
         # Set up the mock client to return our responses
