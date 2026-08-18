@@ -110,7 +110,6 @@ class GitHubTokenVerifier(TokenVerifier):
                 if self._http_client is not None
                 else httpx2.AsyncClient(timeout=self.timeout_seconds)
             ) as client:
-                # Get token info from GitHub API
                 response = await client.get(
                     "https://api.github.com/user",
                     headers={
@@ -138,10 +137,8 @@ class GitHubTokenVerifier(TokenVerifier):
 
                 user_data = response.json()
 
-                # Get token scopes from GitHub API
-                # GitHub includes scopes in the X-OAuth-Scopes header
                 scopes_response = await client.get(
-                    "https://api.github.com/user/repos",  # Any authenticated endpoint
+                    "https://api.github.com/user/repos",
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/vnd.github.v3+json",
@@ -157,7 +154,6 @@ class GitHubTokenVerifier(TokenVerifier):
                     )
                     scopes_response.raise_for_status()
 
-                # Extract scopes from X-OAuth-Scopes header if available
                 scopes_verified = scopes_response.status_code == 200
                 oauth_scopes_header = scopes_response.headers.get("x-oauth-scopes", "")
                 token_scopes = [
@@ -166,11 +162,9 @@ class GitHubTokenVerifier(TokenVerifier):
                     if scope.strip()
                 ]
 
-                # If no scopes in header, assume basic scopes based on successful user API call
                 if not token_scopes:
-                    token_scopes = ["user"]  # Basic scope if we can access user info
+                    token_scopes = ["user"]
 
-                # Check required scopes
                 if self.required_scopes:
                     token_scopes_set = set(token_scopes)
                     required_scopes_set = set(self.required_scopes)
@@ -182,12 +176,11 @@ class GitHubTokenVerifier(TokenVerifier):
                         )
                         return None
 
-                # Create AccessToken with GitHub user info
                 result = AccessToken(
                     token=token,
-                    client_id=str(user_data.get("id", "unknown")),  # Use GitHub user ID
+                    client_id=str(user_data.get("id", "unknown")),
                     scopes=token_scopes,
-                    expires_at=None,  # GitHub tokens don't typically expire
+                    expires_at=None,
                     subject=str(user_data["id"]),
                     claims={
                         "sub": str(user_data["id"]),
@@ -274,7 +267,7 @@ class GitHubProvider(OAuthProxy):
                 and token audience. Defaults to ``base_url``.
             issuer_url: Issuer URL for OAuth metadata (defaults to base_url). Use root-level URL
                 to avoid 404s during discovery when mounting under a path.
-            redirect_path: Redirect path configured in upstream OAuth app (defaults to "/auth/callback")
+            redirect_path: Redirect path configured in GitHub OAuth app (defaults to "/auth/callback")
             required_scopes: Required GitHub scopes (defaults to ["user"])
             timeout_seconds: HTTP request timeout for GitHub API calls (defaults to 10)
             cache_ttl_seconds: How long to cache token verification results in seconds.
@@ -290,7 +283,7 @@ class GitHubProvider(OAuthProxy):
                 they will be used as is. If a string is provided, it will be derived into a 32-byte key. If not
                 provided, the upstream client secret will be used to derive a 32-byte key using PBKDF2.
             require_authorization_consent: Whether to require user consent before authorizing clients (default True).
-                When True, users see a consent screen before being redirected to upstream IdP.
+                When True, users see a consent screen before being redirected to GitHub.
                 When False, authorization proceeds directly without user confirmation.
                 When "external", authorization follows the same direct path as False,
                 but the warning is suppressed as an operator acknowledgment that
@@ -313,12 +306,10 @@ class GitHubProvider(OAuthProxy):
             token_expiry_threshold_seconds: Number of seconds before actual expiry to
                 treat a token as expired, refreshing early to avoid races. Defaults to 0.
         """
-        # Parse scopes if provided as string
         required_scopes_final = (
             parse_scopes(required_scopes) if required_scopes is not None else ["user"]
         )
 
-        # Create GitHub token verifier
         token_verifier = GitHubTokenVerifier(
             required_scopes=required_scopes_final,
             timeout_seconds=timeout_seconds,
@@ -327,7 +318,6 @@ class GitHubProvider(OAuthProxy):
             http_client=http_client,
         )
 
-        # Initialize OAuth proxy with GitHub endpoints
         super().__init__(
             upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
             upstream_token_endpoint="https://github.com/login/oauth/access_token",
@@ -337,7 +327,7 @@ class GitHubProvider(OAuthProxy):
             base_url=base_url,
             resource_base_url=resource_base_url,
             redirect_path=redirect_path,
-            issuer_url=issuer_url or base_url,  # Default to base_url if not specified
+            issuer_url=issuer_url or base_url,
             allowed_client_redirect_uris=allowed_client_redirect_uris,
             client_storage=client_storage,
             jwt_signing_key=jwt_signing_key,
