@@ -111,6 +111,14 @@ class GitHubTokenVerifier(TokenVerifier):
                     },
                 )
 
+                if 500 <= response.status_code < 600:
+                    logger.warning(
+                        "GitHub token verification unavailable: %d - %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    response.raise_for_status()
+
                 if response.status_code != 200:
                     logger.debug(
                         "GitHub token verification failed: %d - %s",
@@ -177,9 +185,9 @@ class GitHubTokenVerifier(TokenVerifier):
                     self._cache.set(token, result)
                 return result
 
-        except httpx2.RequestError as e:
-            logger.debug("Failed to verify GitHub token: %s", e)
-            return None
+        except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
+            logger.warning("GitHub token verification unavailable: %s", e)
+            raise
         except Exception as e:
             logger.debug("GitHub token verification error: %s", e)
             return None
@@ -188,9 +196,8 @@ class GitHubTokenVerifier(TokenVerifier):
 class GitHubProvider(OAuthProxy):
     """Complete GitHub OAuth provider for FastMCP.
 
-    This provider makes it trivial to add GitHub OAuth protection to any
-    FastMCP server. Just provide your GitHub OAuth app credentials and
-    a base URL, and you're ready to go.
+    This provider makes it trivial to add OAuth protection for any upstream provider
+    that is OIDC compliant.
 
     Features:
     - Transparent OAuth proxy to GitHub
