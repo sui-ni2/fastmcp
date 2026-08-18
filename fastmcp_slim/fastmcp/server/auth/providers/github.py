@@ -110,6 +110,7 @@ class GitHubTokenVerifier(TokenVerifier):
                 if self._http_client is not None
                 else httpx2.AsyncClient(timeout=self.timeout_seconds)
             ) as client:
+                # Get token info from GitHub API
                 response = await client.get(
                     "https://api.github.com/user",
                     headers={
@@ -137,8 +138,10 @@ class GitHubTokenVerifier(TokenVerifier):
 
                 user_data = response.json()
 
+                # Get token scopes from GitHub API
+                # GitHub includes scopes in the X-OAuth-Scopes header
                 scopes_response = await client.get(
-                    "https://api.github.com/user/repos",
+                    "https://api.github.com/user/repos",  # Any authenticated endpoint
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/vnd.github.v3+json",
@@ -154,6 +157,7 @@ class GitHubTokenVerifier(TokenVerifier):
                     )
                     scopes_response.raise_for_status()
 
+                # Extract scopes from X-OAuth-Scopes header if available
                 scopes_verified = scopes_response.status_code == 200
                 oauth_scopes_header = scopes_response.headers.get("x-oauth-scopes", "")
                 token_scopes = [
@@ -162,9 +166,11 @@ class GitHubTokenVerifier(TokenVerifier):
                     if scope.strip()
                 ]
 
+                # If no scopes in header, assume basic scopes based on successful user API call
                 if not token_scopes:
-                    token_scopes = ["user"]
+                    token_scopes = ["user"]  # Basic scope if we can access user info
 
+                # Check required scopes
                 if self.required_scopes:
                     token_scopes_set = set(token_scopes)
                     required_scopes_set = set(self.required_scopes)
@@ -176,11 +182,12 @@ class GitHubTokenVerifier(TokenVerifier):
                         )
                         return None
 
+                # Create AccessToken with GitHub user info
                 result = AccessToken(
                     token=token,
-                    client_id=str(user_data.get("id", "unknown")),
+                    client_id=str(user_data.get("id", "unknown")),  # Use GitHub user ID
                     scopes=token_scopes,
-                    expires_at=None,
+                    expires_at=None,  # GitHub tokens don't typically expire
                     subject=str(user_data["id"]),
                     claims={
                         "sub": str(user_data["id"]),
@@ -306,10 +313,12 @@ class GitHubProvider(OAuthProxy):
             token_expiry_threshold_seconds: Number of seconds before actual expiry to
                 treat a token as expired, refreshing early to avoid races. Defaults to 0.
         """
+        # Parse scopes if provided as string
         required_scopes_final = (
             parse_scopes(required_scopes) if required_scopes is not None else ["user"]
         )
 
+        # Create GitHub token verifier
         token_verifier = GitHubTokenVerifier(
             required_scopes=required_scopes_final,
             timeout_seconds=timeout_seconds,
@@ -318,6 +327,7 @@ class GitHubProvider(OAuthProxy):
             http_client=http_client,
         )
 
+        # Initialize OAuth proxy with GitHub endpoints
         super().__init__(
             upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
             upstream_token_endpoint="https://github.com/login/oauth/access_token",
@@ -327,7 +337,7 @@ class GitHubProvider(OAuthProxy):
             base_url=base_url,
             resource_base_url=resource_base_url,
             redirect_path=redirect_path,
-            issuer_url=issuer_url or base_url,
+            issuer_url=issuer_url or base_url,  # Default to base_url if not specified
             allowed_client_redirect_uris=allowed_client_redirect_uris,
             client_storage=client_storage,
             jwt_signing_key=jwt_signing_key,
