@@ -120,21 +120,21 @@ class GitHubTokenVerifier(TokenVerifier):
                     },
                 )
 
-                if 500 <= response.status_code < 600:
-                    logger.warning(
-                        "GitHub token verification unavailable: %d - %s",
-                        response.status_code,
-                        response.text[:200],
-                    )
-                    response.raise_for_status()
-
-                if response.status_code != 200:
+                if response.status_code == 401:
                     logger.debug(
                         "GitHub token verification failed: %d - %s",
                         response.status_code,
                         response.text[:200],
                     )
                     return None
+
+                if response.status_code != 200:
+                    logger.warning(
+                        "GitHub token verification unavailable: %d - %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    response.raise_for_status()
 
                 user_data = response.json()
 
@@ -149,16 +149,9 @@ class GitHubTokenVerifier(TokenVerifier):
                     },
                 )
 
-                if 500 <= scopes_response.status_code < 600:
-                    logger.warning(
-                        "GitHub scope verification unavailable: %d - %s",
-                        scopes_response.status_code,
-                        scopes_response.text[:200],
-                    )
-                    scopes_response.raise_for_status()
-
-                # Extract scopes from X-OAuth-Scopes header if available
-                scopes_verified = scopes_response.status_code == 200
+                # Scope lookup is supplementary: a successful /user response already
+                # establishes the token identity. If this second endpoint is degraded,
+                # fall back to the basic user scope rather than invalidating the token.
                 oauth_scopes_header = scopes_response.headers.get("x-oauth-scopes", "")
                 token_scopes = [
                     scope.strip()
@@ -198,8 +191,9 @@ class GitHubTokenVerifier(TokenVerifier):
                         "github_user_data": user_data,
                     },
                 )
-                if scopes_verified:
-                    self._cache.set(token, result)
+                # Cache every accepted verification result. In particular, a degraded
+                # scope endpoint must not disable the cache that protects active sessions.
+                self._cache.set(token, result)
                 return result
 
         except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
