@@ -27,6 +27,7 @@ from typing import Literal
 
 import httpx2
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.server.auth.provider import AccessToken as MCPAccessToken
 from pydantic import AnyHttpUrl
 
 from fastmcp.server.auth import TokenVerifier
@@ -273,7 +274,7 @@ class GitHubProvider(OAuthProxy):
                 and token audience. Defaults to ``base_url``.
             issuer_url: Issuer URL for OAuth metadata (defaults to base_url). Use root-level URL
                 to avoid 404s during discovery when mounting under a path.
-            redirect_path: Redirect path configured in GitHub OAuth app (defaults to "/auth/callback")
+            redirect_path: Redirect path configured in upstream OAuth app (defaults to "/auth/callback")
             required_scopes: Required GitHub scopes (defaults to ["user"])
             timeout_seconds: HTTP request timeout for GitHub API calls (defaults to 10)
             cache_ttl_seconds: How long to cache token verification results in seconds.
@@ -289,7 +290,7 @@ class GitHubProvider(OAuthProxy):
                 they will be used as is. If a string is provided, it will be derived into a 32-byte key. If not
                 provided, the upstream client secret will be used to derive a 32-byte key using PBKDF2.
             require_authorization_consent: Whether to require user consent before authorizing clients (default True).
-                When True, users see a consent screen before being redirected to GitHub.
+                When True, users see a consent screen before being redirected to upstream IdP.
                 When False, authorization proceeds directly without user confirmation.
                 When "external", authorization follows the same direct path as False,
                 but the warning is suppressed as an operator acknowledgment that
@@ -355,7 +356,7 @@ class GitHubProvider(OAuthProxy):
             required_scopes_final,
         )
 
-    async def load_access_token(self, token: str) -> AccessToken | None:
+    async def load_access_token(self, token: str) -> MCPAccessToken | None:
         """Preserve transient GitHub verification failures through OAuthProxy."""
         context_token = _github_verification_error.set(None)
         try:
