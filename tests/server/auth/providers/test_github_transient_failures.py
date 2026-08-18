@@ -72,7 +72,9 @@ async def test_github_provider_restores_error_swallowed_by_oauth_proxy():
             client_storage=MemoryStore(),
             http_client=client,
         )
-        with patch.object(OAuthProxy, "load_access_token", swallowing_load_access_token):
+        with patch.object(
+            OAuthProxy, "load_access_token", swallowing_load_access_token
+        ):
             with pytest.raises(httpx2.HTTPStatusError) as exc_info:
                 await provider.load_access_token("fastmcp-token")
 
