@@ -22,10 +22,13 @@ Example:
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Literal
 
 import httpx2
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.server.auth.provider import AccessToken as MCPAccessToken
 from pydantic import AnyHttpUrl
 
 from fastmcp.server.auth import TokenVerifier
@@ -36,6 +39,23 @@ from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.token_cache import TokenCache
 
 logger = get_logger(__name__)
+
+# OAuthProxy treats verifier exceptions as ordinary invalid-token results. Keep a
+# request-local marker so GitHubProvider can preserve transient upstream failures
+# without changing error handling for every other OAuth proxy provider.
+_github_verification_error: ContextVar[Exception | None] = ContextVar(
+    "github_verification_error", default=None
+)
+
+# Scope discovery is a second GitHub request and can fail independently after
+# /user has already established identity. Standalone verifiers must never invent
+# scopes in that case. GitHubProvider can, however, recover the IdP-granted scopes
+# from OAuthProxy's encrypted upstream-token state. A request-local loader keeps
+# that trusted proxy state out of standalone verifier calls.
+_GitHubTrustedScopesLoader = Callable[[], Awaitable[tuple[str, ...] | None]]
+_github_trusted_scopes_loader: ContextVar[_GitHubTrustedScopesLoader | None] = (
+    ContextVar("github_trusted_scopes_loader", default=None)
+)
 
 
 class GitHubTokenVerifier(TokenVerifier):
@@ -101,7 +121,6 @@ class GitHubTokenVerifier(TokenVerifier):
                 if self._http_client is not None
                 else httpx2.AsyncClient(timeout=self.timeout_seconds)
             ) as client:
-                # Get token info from GitHub API
                 response = await client.get(
                     "https://api.github.com/user",
                     headers={
@@ -111,7 +130,7 @@ class GitHubTokenVerifier(TokenVerifier):
                     },
                 )
 
-                if response.status_code != 200:
+                if response.status_code == 401:
                     logger.debug(
                         "GitHub token verification failed: %d - %s",
                         response.status_code,
@@ -119,33 +138,49 @@ class GitHubTokenVerifier(TokenVerifier):
                     )
                     return None
 
+                if response.status_code != 200:
+                    logger.warning(
+                        "GitHub token verification unavailable: %d - %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    response.raise_for_status()
+
                 user_data = response.json()
 
-                # Get token scopes from GitHub API
-                # GitHub includes scopes in the X-OAuth-Scopes header
-                scopes_response = await client.get(
-                    "https://api.github.com/user/repos",  # Any authenticated endpoint
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/vnd.github.v3+json",
-                        "User-Agent": "FastMCP-GitHub-OAuth",
-                    },
-                )
+                # /user/repos is supplementary: /user already established identity.
+                # Scope discovery can fail independently, but a standalone verifier
+                # must not synthesize scopes that GitHub did not prove were granted.
+                try:
+                    scopes_response = await client.get(
+                        "https://api.github.com/user/repos",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/vnd.github.v3+json",
+                            "User-Agent": "FastMCP-GitHub-OAuth",
+                        },
+                    )
+                    scopes_response.raise_for_status()
+                    oauth_scopes_header = scopes_response.headers.get(
+                        "x-oauth-scopes", ""
+                    )
+                except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
+                    logger.warning("GitHub scope verification unavailable: %s", e)
+                    oauth_scopes_header = ""
 
-                # Extract scopes from X-OAuth-Scopes header if available
-                scopes_verified = scopes_response.status_code == 200
-                oauth_scopes_header = scopes_response.headers.get("x-oauth-scopes", "")
                 token_scopes = [
                     scope.strip()
                     for scope in oauth_scopes_header.split(",")
                     if scope.strip()
                 ]
 
-                # If no scopes in header, assume basic scopes based on successful user API call
                 if not token_scopes:
-                    token_scopes = ["user"]  # Basic scope if we can access user info
+                    trusted_scopes_loader = _github_trusted_scopes_loader.get()
+                    if trusted_scopes_loader is not None:
+                        trusted_scopes = await trusted_scopes_loader()
+                        if trusted_scopes is not None:
+                            token_scopes = list(trusted_scopes)
 
-                # Check required scopes
                 if self.required_scopes:
                     token_scopes_set = set(token_scopes)
                     required_scopes_set = set(self.required_scopes)
@@ -157,12 +192,11 @@ class GitHubTokenVerifier(TokenVerifier):
                         )
                         return None
 
-                # Create AccessToken with GitHub user info
                 result = AccessToken(
                     token=token,
-                    client_id=str(user_data.get("id", "unknown")),  # Use GitHub user ID
+                    client_id=str(user_data.get("id", "unknown")),
                     scopes=token_scopes,
-                    expires_at=None,  # GitHub tokens don't typically expire
+                    expires_at=None,
                     subject=str(user_data["id"]),
                     claims={
                         "sub": str(user_data["id"]),
@@ -173,13 +207,13 @@ class GitHubTokenVerifier(TokenVerifier):
                         "github_user_data": user_data,
                     },
                 )
-                if scopes_verified:
-                    self._cache.set(token, result)
+                self._cache.set(token, result)
                 return result
 
-        except httpx2.RequestError as e:
-            logger.debug("Failed to verify GitHub token: %s", e)
-            return None
+        except (httpx2.HTTPStatusError, httpx2.RequestError) as e:
+            _github_verification_error.set(e)
+            logger.warning("GitHub token verification unavailable: %s", e)
+            raise
         except Exception as e:
             logger.debug("GitHub token verification error: %s", e)
             return None
@@ -242,7 +276,7 @@ class GitHubProvider(OAuthProxy):
 
         Args:
             client_id: GitHub OAuth app client ID (e.g., "Ov23li...")
-            client_secret: GitHub OAuth app client secret
+            client_secret: GitHub client secret from your OAuth app registration
             base_url: Public URL where OAuth endpoints will be accessible (includes any mount path)
             resource_base_url: Optional public base URL for the protected resource metadata
                 and token audience. Defaults to ``base_url``.
@@ -287,12 +321,10 @@ class GitHubProvider(OAuthProxy):
             token_expiry_threshold_seconds: Number of seconds before actual expiry to
                 treat a token as expired, refreshing early to avoid races. Defaults to 0.
         """
-        # Parse scopes if provided as string
         required_scopes_final = (
             parse_scopes(required_scopes) if required_scopes is not None else ["user"]
         )
 
-        # Create GitHub token verifier
         token_verifier = GitHubTokenVerifier(
             required_scopes=required_scopes_final,
             timeout_seconds=timeout_seconds,
@@ -301,7 +333,6 @@ class GitHubProvider(OAuthProxy):
             http_client=http_client,
         )
 
-        # Initialize OAuth proxy with GitHub endpoints
         super().__init__(
             upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
             upstream_token_endpoint="https://github.com/login/oauth/access_token",
@@ -311,7 +342,7 @@ class GitHubProvider(OAuthProxy):
             base_url=base_url,
             resource_base_url=resource_base_url,
             redirect_path=redirect_path,
-            issuer_url=issuer_url or base_url,  # Default to base_url if not specified
+            issuer_url=issuer_url or base_url,
             allowed_client_redirect_uris=allowed_client_redirect_uris,
             client_storage=client_storage,
             jwt_signing_key=jwt_signing_key,
@@ -329,3 +360,38 @@ class GitHubProvider(OAuthProxy):
             client_id,
             required_scopes_final,
         )
+
+    async def load_access_token(self, token: str) -> MCPAccessToken | None:
+        """Preserve transient failures and use trusted proxy scope state."""
+
+        async def load_trusted_scopes() -> tuple[str, ...] | None:
+            try:
+                payload = self.jwt_issuer.verify_token(token)
+                jti = payload.get("jti")
+                if not jti:
+                    return None
+                jti_mapping = await self._jti_mapping_store.get(key=jti)
+                if not jti_mapping:
+                    return None
+                upstream_token_set = await self._upstream_token_store.get(
+                    key=jti_mapping.upstream_token_id
+                )
+                if upstream_token_set is None:
+                    return None
+                return tuple(upstream_token_set.scope.split())
+            except Exception as e:
+                logger.debug("Unable to load trusted GitHub proxy scopes: %s", e)
+                return None
+
+        error_context_token = _github_verification_error.set(None)
+        scopes_context_token = _github_trusted_scopes_loader.set(load_trusted_scopes)
+        try:
+            result = await super().load_access_token(token)
+            if result is None:
+                transient_error = _github_verification_error.get()
+                if transient_error is not None:
+                    raise transient_error
+            return result
+        finally:
+            _github_trusted_scopes_loader.reset(scopes_context_token)
+            _github_verification_error.reset(error_context_token)
