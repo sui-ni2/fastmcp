@@ -149,6 +149,7 @@ async def test_provider_uses_trusted_grant_when_scope_endpoint_fails_and_caches(
             client_storage=storage,
             http_client=client,
         )
+        provider.set_mcp_path("/mcp")
 
         upstream_token_id = "trusted-upstream-token"
         jti = "fastmcp-access-jti"
@@ -215,6 +216,7 @@ async def test_provider_scope_401_rejects_even_with_trusted_grant():
             client_storage=storage,
             http_client=client,
         )
+        provider.set_mcp_path("/mcp")
 
         upstream_token_id = "trusted-upstream-token"
         jti = "fastmcp-access-jti"
@@ -274,6 +276,7 @@ async def test_provider_trusted_grant_does_not_widen_required_scopes():
             client_storage=storage,
             http_client=client,
         )
+        provider.set_mcp_path("/mcp")
 
         upstream_token_id = "trusted-upstream-token"
         jti = "fastmcp-access-jti"
