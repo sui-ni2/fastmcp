@@ -160,6 +160,11 @@ class GitHubTokenVerifier(TokenVerifier):
                             "User-Agent": "FastMCP-GitHub-OAuth",
                         },
                     )
+                    if scopes_response.status_code == 401:
+                        logger.debug(
+                            "GitHub token became invalid during scope verification"
+                        )
+                        return None
                     scopes_response.raise_for_status()
                     oauth_scopes_header = scopes_response.headers.get(
                         "x-oauth-scopes", ""
