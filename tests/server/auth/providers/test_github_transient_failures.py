@@ -103,7 +103,5 @@ async def test_oauth_proxy_propagates_operational_verification_error():
         expires_in=3600,
     )
 
-    with pytest.raises(
-        TokenVerificationError, match="upstream verifier unavailable"
-    ):
+    with pytest.raises(TokenVerificationError, match="upstream verifier unavailable"):
         await proxy.load_access_token(fastmcp_token)
