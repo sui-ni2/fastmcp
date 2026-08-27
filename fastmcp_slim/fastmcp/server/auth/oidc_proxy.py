@@ -268,7 +268,9 @@ class OIDCProxy(OAuthProxy):
             token_verifier: Optional custom token verifier (e.g., IntrospectionTokenVerifier for opaque tokens).
                 If not provided, a JWTVerifier will be created using the OIDC configuration.
                 Cannot be used with algorithm or required_scopes parameters (configure these on your verifier instead).
-            algorithm: Token verifier algorithm (only used if token_verifier is not provided)
+            algorithm: Token verifier algorithm (only used if token_verifier is not provided).
+                When an HS* algorithm is explicitly selected, the upstream client_secret
+                is used as the shared verification key instead of the discovery JWKS.
             required_scopes: Required scopes for token validation (only used if token_verifier is not provided)
             verify_id_token: If True, verify the OIDC id_token instead of the access_token.
                 Useful for providers that issue opaque (non-JWT) access tokens, since the
@@ -404,12 +406,26 @@ class OIDCProxy(OAuthProxy):
             #   at the FastMCP token level instead).
             verifier_audience = client_id if verify_id_token else audience
             verifier_scopes = None if verify_id_token else required_scopes
-            token_verifier = self.get_token_verifier(
-                algorithm=algorithm,
-                audience=verifier_audience,
-                required_scopes=verifier_scopes,
-                timeout_seconds=timeout_seconds,
-            )
+
+            if algorithm is not None and algorithm.startswith("HS"):
+                if client_secret is None:
+                    raise ValueError(
+                        "Symmetric HS* token verification requires client_secret"
+                    )
+                token_verifier = JWTVerifier(
+                    public_key=client_secret,
+                    issuer=str(self.oidc_config.issuer),
+                    algorithm=algorithm,
+                    audience=verifier_audience,
+                    required_scopes=verifier_scopes,
+                )
+            else:
+                token_verifier = self.get_token_verifier(
+                    algorithm=algorithm,
+                    audience=verifier_audience,
+                    required_scopes=verifier_scopes,
+                    timeout_seconds=timeout_seconds,
+                )
 
         init_kwargs: dict[str, object] = {
             "upstream_authorization_endpoint": str(
