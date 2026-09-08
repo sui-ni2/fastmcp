@@ -22,8 +22,7 @@ SERVER_URL = "https://mcp.example.com/mcp"
 AUTH_SERVER_URL = "https://auth.example.com"
 
 CLIENT_CREDENTIALS_SUPPORTS_ISSUER = (
-    "issuer"
-    in inspect.signature(SDKClientCredentialsOAuthProvider.__init__).parameters
+    "issuer" in inspect.signature(SDKClientCredentialsOAuthProvider.__init__).parameters
 )
 PRIVATE_KEY_JWT_SUPPORTS_ISSUER = (
     "issuer" in inspect.signature(SDKPrivateKeyJWTOAuthProvider.__init__).parameters
