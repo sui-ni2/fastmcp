@@ -17,6 +17,9 @@ permissions:
 
 jobs:
   update-sdk-docs:
+    # Marvin App credentials are configured only in the upstream repository.
+    # Forks should not fail every main push because upstream-only secrets are absent.
+    if: github.repository == 'PrefectHQ/fastmcp'
     timeout-minutes: 5
     runs-on: ubuntu-latest
 
@@ -25,7 +28,7 @@ jobs:
         id: marvin-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.MARVIN_APP_ID }}
+          client-id: ${{ secrets.MARVIN_APP_ID }}
           private-key: ${{ secrets.MARVIN_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
