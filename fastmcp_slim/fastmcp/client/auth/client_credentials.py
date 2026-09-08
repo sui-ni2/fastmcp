@@ -51,7 +51,8 @@ __all__ = [
 ]
 
 _SDK_CLIENT_CREDENTIALS_SUPPORTS_ISSUER = (
-    "issuer" in inspect.signature(_SDKClientCredentialsOAuthProvider.__init__).parameters
+    "issuer"
+    in inspect.signature(_SDKClientCredentialsOAuthProvider.__init__).parameters
 )
 _SDK_PRIVATE_KEY_JWT_SUPPORTS_ISSUER = (
     "issuer" in inspect.signature(_SDKPrivateKeyJWTOAuthProvider.__init__).parameters
