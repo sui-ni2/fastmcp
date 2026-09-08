@@ -1,0 +1,6 @@
+# Temporary compatibility guard for the scheduled upgrade matrix.
+# MCP 2.2.0 adds an explicit authorization-server issuer requirement that
+# FastMCP's client-credentials wrapper does not yet expose. Keep the upgrade
+# matrix below 2.2.0 until that API is wired through; do not weaken runtime
+# credential-routing semantics just to silence the warning.
+mcp<2.2.0
