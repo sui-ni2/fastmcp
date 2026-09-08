@@ -16,10 +16,12 @@ bound to the server URL automatically when passed to `Client(auth=...)`.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import warnings
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextvars import ContextVar
-from typing import Literal
+from typing import Any, Literal
 
 import httpx2
 from key_value.aio.protocols import AsyncKeyValue
@@ -36,6 +38,7 @@ from mcp.client.auth.extensions.client_credentials import (
 )
 from mcp.client.auth.oauth2 import OAuthContext
 from mcp.client.auth.utils import extract_field_from_www_auth
+from mcp.shared.exceptions import MCPDeprecationWarning
 from typing_extensions import override
 
 from fastmcp.client.auth.oauth import TokenStorageAdapter
@@ -46,6 +49,19 @@ __all__ = [
     "SignedJWTParameters",
     "static_assertion_provider",
 ]
+
+_SDK_CLIENT_CREDENTIALS_SUPPORTS_ISSUER = (
+    "issuer"
+    in inspect.signature(_SDKClientCredentialsOAuthProvider.__init__).parameters
+)
+_SDK_PRIVATE_KEY_JWT_SUPPORTS_ISSUER = (
+    "issuer" in inspect.signature(_SDKPrivateKeyJWTOAuthProvider.__init__).parameters
+)
+_MISSING_ISSUER_WARNING = (
+    "Omitting `issuer` is deprecated and it will be required in MCP 3.0. "
+    "Pass the authorization server's issuer URL so client credentials are only "
+    "sent to that authorization server."
+)
 
 # Whether the auth flow currently being driven is a 403 step-up rather than an
 # initial authorization. A ContextVar (not instance state) so it stays scoped to
@@ -103,6 +119,18 @@ def _is_insufficient_scope_challenge(response: httpx2.Response) -> bool:
     if response.status_code != 403:
         return False
     return extract_field_from_www_auth(response, "error") == "insufficient_scope"
+
+
+def _warn_missing_issuer() -> None:
+    """Surface the MCP 2.2+ issuer migration warning when auth is actually used.
+
+    The SDK emits this warning while its provider is constructed. FastMCP binds
+    providers lazily, and construction historically promises not to warn merely
+    because in-memory token storage is used, so we defer only this specific SDK
+    warning until the first auth-flow entry point. The security signal is retained
+    while constructor-only callers do not receive an unrelated storage warning.
+    """
+    warnings.warn(_MISSING_ISSUER_WARNING, MCPDeprecationWarning, stacklevel=3)
 
 
 async def _restore_token_expiry(context: OAuthContext) -> None:
@@ -179,6 +207,7 @@ class ClientCredentialsOAuthProvider(_SDKClientCredentialsOAuthProvider):
             client_id="my-client-id",
             client_secret="my-client-secret",
             scopes=["read", "write"],
+            issuer="https://auth.example.com",
         )
 
         async with Client("https://example.com/mcp", auth=auth) as client:
@@ -199,6 +228,7 @@ class ClientCredentialsOAuthProvider(_SDKClientCredentialsOAuthProvider):
             "client_secret_basic", "client_secret_post"
         ] = "client_secret_basic",
         token_storage: AsyncKeyValue | None = None,
+        issuer: str | None = None,
     ) -> None:
         """Initialize a client_credentials OAuth provider.
 
@@ -216,12 +246,17 @@ class ClientCredentialsOAuthProvider(_SDKClientCredentialsOAuthProvider):
                 in the request body.
             token_storage: An AsyncKeyValue-compatible token store. Tokens are kept
                 in memory if not provided.
+            issuer: Authorization server issuer URL for these credentials. MCP 2.2+
+                uses this to ensure credentials are only sent to metadata belonging
+                to that issuer. Omitting it is deprecated by MCP 2.2 and it will be
+                required by MCP 3.0.
         """
         self._client_id = client_id
         self._client_secret = client_secret
         self._scopes = _normalize_scopes(scopes)
         self._token_endpoint_auth_method = token_endpoint_auth_method
         self._token_storage = token_storage
+        self._issuer = issuer
         self._bound = False
 
         if mcp_url is not None:
@@ -237,16 +272,31 @@ class ClientCredentialsOAuthProvider(_SDKClientCredentialsOAuthProvider):
             return
 
         mcp_url = mcp_url.rstrip("/")
-        super().__init__(
-            server_url=mcp_url,
-            storage=_resolve_token_storage(
+        kwargs: dict[str, Any] = {
+            "server_url": mcp_url,
+            "storage": _resolve_token_storage(
                 self._token_storage, mcp_url, self._client_id, self._scopes
             ),
-            client_id=self._client_id,
-            client_secret=self._client_secret,
-            token_endpoint_auth_method=self._token_endpoint_auth_method,
-            scope=self._scopes,
-        )
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "token_endpoint_auth_method": self._token_endpoint_auth_method,
+            "scope": self._scopes,
+        }
+        if _SDK_CLIENT_CREDENTIALS_SUPPORTS_ISSUER:
+            kwargs["issuer"] = self._issuer
+        elif self._issuer is not None:
+            raise RuntimeError(
+                "ClientCredentialsOAuthProvider issuer= requires mcp>=2.2.0."
+            )
+
+        with warnings.catch_warnings():
+            if _SDK_CLIENT_CREDENTIALS_SUPPORTS_ISSUER and self._issuer is None:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Omitting `issuer` is deprecated.*",
+                    category=MCPDeprecationWarning,
+                )
+            super().__init__(**kwargs)
         self._bound = True
 
     @override
@@ -264,6 +314,8 @@ class ClientCredentialsOAuthProvider(_SDKClientCredentialsOAuthProvider):
                 "mcp_url to the constructor or use it with Client(auth=...), which "
                 "provides the URL automatically from the transport."
             )
+        if _SDK_CLIENT_CREDENTIALS_SUPPORTS_ISSUER and self._issuer is None:
+            _warn_missing_issuer()
         return _drive_flow_tracking_step_up(super().async_auth_flow(request))
 
     @override
@@ -309,6 +361,7 @@ class PrivateKeyJWTOAuthProvider(_SDKPrivateKeyJWTOAuthProvider):
         auth = PrivateKeyJWTOAuthProvider(
             client_id="my-client-id",
             assertion_provider=jwt_params.create_assertion_provider(),
+            issuer="https://auth.example.com",
         )
 
         async with Client("https://example.com/mcp", auth=auth) as client:
@@ -326,6 +379,7 @@ class PrivateKeyJWTOAuthProvider(_SDKPrivateKeyJWTOAuthProvider):
         assertion_provider: Callable[[str], Awaitable[str]],
         scopes: str | list[str] | None = None,
         token_storage: AsyncKeyValue | None = None,
+        issuer: str | None = None,
     ) -> None:
         """Initialize a private_key_jwt OAuth provider.
 
@@ -344,11 +398,16 @@ class PrivateKeyJWTOAuthProvider(_SDKPrivateKeyJWTOAuthProvider):
                 of strings.
             token_storage: An AsyncKeyValue-compatible token store. Tokens are kept
                 in memory if not provided.
+            issuer: Authorization server issuer URL for this client registration.
+                MCP 2.2+ uses it to ensure assertions and token requests are only
+                created for metadata belonging to that issuer. Omitting it is
+                deprecated by MCP 2.2 and it will be required by MCP 3.0.
         """
         self._client_id = client_id
         self._assertion_provider = assertion_provider
         self._scopes = _normalize_scopes(scopes)
         self._token_storage = token_storage
+        self._issuer = issuer
         self._bound = False
 
         if mcp_url is not None:
@@ -364,15 +423,30 @@ class PrivateKeyJWTOAuthProvider(_SDKPrivateKeyJWTOAuthProvider):
             return
 
         mcp_url = mcp_url.rstrip("/")
-        super().__init__(
-            server_url=mcp_url,
-            storage=_resolve_token_storage(
+        kwargs: dict[str, Any] = {
+            "server_url": mcp_url,
+            "storage": _resolve_token_storage(
                 self._token_storage, mcp_url, self._client_id, self._scopes
             ),
-            client_id=self._client_id,
-            assertion_provider=self._assertion_provider,
-            scope=self._scopes,
-        )
+            "client_id": self._client_id,
+            "assertion_provider": self._assertion_provider,
+            "scope": self._scopes,
+        }
+        if _SDK_PRIVATE_KEY_JWT_SUPPORTS_ISSUER:
+            kwargs["issuer"] = self._issuer
+        elif self._issuer is not None:
+            raise RuntimeError(
+                "PrivateKeyJWTOAuthProvider issuer= requires mcp>=2.2.0."
+            )
+
+        with warnings.catch_warnings():
+            if _SDK_PRIVATE_KEY_JWT_SUPPORTS_ISSUER and self._issuer is None:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Omitting `issuer` is deprecated.*",
+                    category=MCPDeprecationWarning,
+                )
+            super().__init__(**kwargs)
         self._bound = True
 
     @override
@@ -390,6 +464,8 @@ class PrivateKeyJWTOAuthProvider(_SDKPrivateKeyJWTOAuthProvider):
                 "to the constructor or use it with Client(auth=...), which provides "
                 "the URL automatically from the transport."
             )
+        if _SDK_PRIVATE_KEY_JWT_SUPPORTS_ISSUER and self._issuer is None:
+            _warn_missing_issuer()
         return _drive_flow_tracking_step_up(super().async_auth_flow(request))
 
     @override
