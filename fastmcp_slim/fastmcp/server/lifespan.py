@@ -84,8 +84,7 @@ class Lifespan:
         Yields:
             The lifespan context dict.
         """
-        lifespan_context = asynccontextmanager(self._fn)  # ty: ignore[deprecated]
-        async with lifespan_context(server) as result:
+        async with asynccontextmanager(self._fn)(server) as result:
             yield result if result is not None else {}
 
     def __or__(self, other: Lifespan) -> ComposedLifespan:

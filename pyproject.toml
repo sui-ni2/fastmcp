@@ -156,7 +156,7 @@ exclude = [
     "examples/testing_demo",             # own uv.lock, targets fastmcp v1 on purpose
     "examples/atproto_mcp",              # needs atproto (+ its own package)
     "examples/smart_home",              # needs phue
-    "examples/apps/qr_server",          # needs qrcode
+    "examples/apps/qr_server",           # needs qrcode
     "examples/providers/sqlite",        # needs aiosqlite
     "examples/fastmcp_config_demo",     # needs pyautogui, Pillow
     "examples/screenshot.py",           # needs pyautogui, Pillow
@@ -179,6 +179,12 @@ possibly-unresolved-reference = "warn"
 unsupported-dynamic-base = "warn"
 unsupported-operator = "warn"
 unused-ignore-comment = "warn"
+
+[[tool.ty.overrides]]
+include = ["fastmcp_slim/fastmcp/server/lifespan.py"]
+
+[tool.ty.overrides.rules]
+deprecated = "ignore"
 
 [tool.ty.terminal]
 error-on-warning = true
