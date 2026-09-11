@@ -75,7 +75,7 @@ class Lifespan:
         self._fn = fn
 
     @asynccontextmanager
-    async def __call__(self, server: FastMCP[Any]) -> AsyncGenerator[dict[str, Any]]:
+    async def __call__(self, server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
         """Execute the lifespan as an async context manager.
 
         Args:
@@ -123,7 +123,7 @@ class ContextManagerLifespan(Lifespan):
         self._fn = fn
 
     @asynccontextmanager
-    async def __call__(self, server: FastMCP[Any]) -> AsyncGenerator[dict[str, Any]]:
+    async def __call__(self, server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
         """Execute the lifespan as an async context manager.
 
         Args:
@@ -156,7 +156,7 @@ class ComposedLifespan(Lifespan):
         self._right = right
 
     @asynccontextmanager
-    async def __call__(self, server: FastMCP[Any]) -> AsyncGenerator[dict[str, Any]]:
+    async def __call__(self, server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
         """Execute both lifespans, merging their results.
 
         Args:
