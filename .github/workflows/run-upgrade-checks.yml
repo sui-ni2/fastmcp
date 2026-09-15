@@ -12,6 +12,7 @@ on:
       - "tests/**"
       - "pyproject.toml"
       - "uv.lock"
+      - ".github/upgrade-constraints.txt"
       - ".github/workflows/**"
 
   schedule:
