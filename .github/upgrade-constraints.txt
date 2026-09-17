@@ -4,3 +4,5 @@
 # matrix below 2.2.0 until that API is wired through; do not weaken runtime
 # credential-routing semantics just to silence the warning.
 mcp<2.2.0
+
+# ty redundant-condition diagnostics are fixed in source; no ty cap is required.
