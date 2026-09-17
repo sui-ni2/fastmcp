@@ -14,43 +14,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply minimal source fix
+      - name: Remove obsolete dedupe state
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          p = Path("fastmcp_slim/fastmcp/utilities/types.py")
-          s = p.read_text()
-          old = "            if resp and resp[0] is not None:\n"
-          new = "            if resp[0] is not None:\n"
-          assert s.count(old) == 1, "unexpected types.py source shape"
-          p.write_text(s.replace(old, new, 1))
-
           p = Path("fastmcp_slim/fastmcp/utilities/openapi/schemas.py")
           s = p.read_text()
-          old = "                body_schema[\"required\"] = [\n                    x for x in merged_required if not (x in seen or seen.add(x))\n                ]\n"
-          new = "                body_schema[\"required\"] = list(dict.fromkeys(merged_required))\n"
-          assert s.count(old) == 1, "unexpected schemas.py source shape"
+          old = "                # Remove duplicates while preserving order\n                seen = set()\n                body_schema[\"required\"] = list(dict.fromkeys(merged_required))\n"
+          new = "                # Remove duplicates while preserving order\n                body_schema[\"required\"] = list(dict.fromkeys(merged_required))\n"
+          assert s.count(old) == 1, "unexpected schemas.py post-fix shape"
           p.write_text(s.replace(old, new, 1))
-
-          p = Path(".github/upgrade-constraints.txt")
-          s = p.read_text()
-          block = "\n# ty 0.0.79 newly reports two redundant-condition diagnostics as failures in\n# existing code. Keep scheduled upgrade checks on the last compatible release\n# until those diagnostics are fixed without changing runtime behavior.\nty<0.0.79\n"
-          assert s.count(block) == 1, "unexpected upgrade constraint source shape"
-          p.write_text(s.replace(block, "", 1))
           PY
           git diff --check
-          python -m compileall -q fastmcp_slim/fastmcp/utilities/types.py fastmcp_slim/fastmcp/utilities/openapi/schemas.py
-      - name: Commit repair
+          python -m compileall -q fastmcp_slim/fastmcp/utilities/openapi/schemas.py
+      - name: Commit cleanup
         shell: bash
         run: |
           if git diff --quiet; then
-            echo "No repair needed"
+            echo "No cleanup needed"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add fastmcp_slim/fastmcp/utilities/types.py fastmcp_slim/fastmcp/utilities/openapi/schemas.py .github/upgrade-constraints.txt
-          git commit -m "fix: resolve upgraded ty redundant conditions"
+          git add fastmcp_slim/fastmcp/utilities/openapi/schemas.py
+          git commit -m "fix: remove obsolete dedupe state"
           git push origin HEAD:main
