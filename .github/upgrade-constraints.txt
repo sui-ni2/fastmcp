@@ -4,8 +4,3 @@
 # matrix below 2.2.0 until that API is wired through; do not weaken runtime
 # credential-routing semantics just to silence the warning.
 mcp<2.2.0
-
-# ty 0.0.79 newly reports two redundant-condition diagnostics as failures in
-# existing code. Keep scheduled upgrade checks on the last compatible release
-# until those diagnostics are fixed without changing runtime behavior.
-ty<0.0.79
