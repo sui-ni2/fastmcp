@@ -1,0 +1,70 @@
+name: Repair ty source diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repair-ty-source.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply minimal source fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("fastmcp_slim/fastmcp/utilities/types.py")
+          s = p.read_text()
+          old = "            if resp and resp[0] is not None:\n"
+          new = "            if resp[0] is not None:\n"
+          assert s.count(old) == 1, "unexpected types.py source shape"
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path("fastmcp_slim/fastmcp/utilities/openapi/schemas.py")
+          s = p.read_text()
+          old = '''                body_schema["required"] = [
+                    x for x in merged_required if not (x in seen or seen.add(x))
+                ]
+'''
+          new = '''                body_schema["required"] = list(dict.fromkeys(merged_required))
+'''
+          assert s.count(old) == 1, "unexpected schemas.py source shape"
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path(".github/upgrade-constraints.txt")
+          s = p.read_text()
+          block = '''
+# ty 0.0.79 newly reports two redundant-condition diagnostics as failures in
+# existing code. Keep scheduled upgrade checks on the last compatible release
+# until those diagnostics are fixed without changing runtime behavior.
+ty<0.0.79
+'''
+          assert s.count(block) == 1, "unexpected upgrade constraint source shape"
+          p.write_text(s.replace(block, "", 1))
+          PY
+          git diff --check
+          python -m compileall -q \
+            fastmcp_slim/fastmcp/utilities/types.py \
+            fastmcp_slim/fastmcp/utilities/openapi/schemas.py
+      - name: Commit repair
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No repair needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            fastmcp_slim/fastmcp/utilities/types.py \
+            fastmcp_slim/fastmcp/utilities/openapi/schemas.py \
+            .github/upgrade-constraints.txt
+          git commit -m "fix: resolve upgraded ty redundant conditions"
+          git push origin HEAD:main
