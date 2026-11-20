@@ -15,6 +15,15 @@ on:
       - ".github/upgrade-constraints.txt"
       - ".github/workflows/**"
 
+  pull_request:
+    paths:
+      - "fastmcp_slim/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/upgrade-constraints.txt"
+      - ".github/workflows/**"
+
   schedule:
     # Run daily at 2 AM UTC
     - cron: "0 2 * * *"
