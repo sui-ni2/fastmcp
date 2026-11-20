@@ -2,11 +2,20 @@ name: Upgrade checks
 
 env:
   PY_COLORS: 1
-  UV_CONSTRAINT: .github/upgrade-constraints.txt
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/upgrade-constraints.txt
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "fastmcp_slim/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/upgrade-constraints.txt"
+      - ".github/workflows/**"
+
+  pull_request:
     paths:
       - "fastmcp_slim/**"
       - "tests/**"
