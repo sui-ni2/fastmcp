@@ -1,3 +1,5 @@
 # No temporary dependency caps are active.
 # The upgrade workflow must exercise the newest versions permitted by package metadata.
+# This file is intentionally kept in the checkout: UV_CONSTRAINT resolves to its
+# absolute workspace path so uv can read it even while installing cached prek hooks.
 # Add a pin only for a documented upstream incompatibility, and remove it once fixed.
