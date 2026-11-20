@@ -1,3 +1,5 @@
 # No temporary dependency caps are active.
 # The upgrade workflow must exercise the newest versions permitted by package metadata.
 # Add a pin only for a documented upstream incompatibility, and remove it once fixed.
+
+# PR-triggered post-fix verification probe; no dependency constraints are imposed.
