@@ -2,7 +2,7 @@ name: Upgrade checks
 
 env:
   PY_COLORS: 1
-  UV_CONSTRAINT: .github/upgrade-constraints.txt
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/upgrade-constraints.txt
 
 on:
   push:
